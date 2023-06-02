@@ -1,0 +1,403 @@
+from pulp import *
+import pandas as pd
+from openpyxl import load_workbook
+
+#---------------------------------------------------------------------------------------------------------------------
+#INPUT FROM THE USER VIA THE EXCEL SHEET:
+
+
+data = pd.read_excel('Desktop/planlama.xlsx', sheet_name='Sheet1')
+
+#Enter the maximum number of teams per slot for group dives. Extra teams may be added for kebap.
+num_teams_for_group_dives = int(data.loc[0, 'number_of_teams'])
+#Enter the number of slots you want to use.
+num_slots = int(data.loc[0, 'number_of_slots'])
+
+#Enter the number of days. Adjust the number to number of days left if you want to redo the program during the trip.
+number_days_left = int(data.loc[0, 'number_of_days_left'])
+
+
+#Enter the number of 3*üst dönem people.
+adjusted_level3_2 = int(data.loc[0, 'level3_ust'])
+#Enter the number of 1* people.
+adjusted_level1 = int(data.loc[0, 'level1'])
+#Enter the number of 3*alt dönem people.
+adjusted_level3_1 = int(data.loc[0, 'level3_alt'])
+#Enter the number of 2*eski people.
+adjusted_level2_1 = int(data.loc[0, 'level2_eski'])
+#Enter the number of 2*çift gezi people
+adjusted_level2_2 = int(data.loc[0, 'level2_ciftgezi'])
+#Enter the number of 3*üst dönem people with first aid certificate. Don't forget to write these people first in the 3*üst dönem list.
+adjusted_first_aid_number = int(data.loc[0, 'first_aid_certificated'])
+#Enter the number of 1* people with ear problems. Don't forget to write these people first in the 1* list.
+adjusted_ear_problem_number = int(data.loc[0, 'having_ear_problem'])
+#Enter the number of equipments that is currently usable
+adjusted_equipment_number = int(data.loc[0, 'number_of_equipment'])
+#Enter 1 if 3*üst dönem people can dive 3 times, leave 0 otherwise
+can_3_2_dive_3_times = int(data.loc[0, 'make_3_ustdonem_dive_3_times'])
+#Enter 1 if you want to use 2 "amir"s during the trip, leave 0 if your want to use 1
+option_2_amir = int(data.loc[0, 'use_2_amir'])
+#Enter 1 if you don't want to see dummy people on your program, leave 0 otherwise
+close_dummy_addition = int(data.loc[0, 'close_dummy_addition'])
+#Enter 1 if half day is cancelled on the previous day, leave 0 otherwise. Don't forget to adjust number of days left.
+half_day_cancelled_on_previous_day = int(data.loc[0, 'half_day_cancelled_on_previous_day'])
+#if half day cancelled on previous day, enter the people that couldn't dive, leave empty otherwise:
+people_that_couldnt_dive = data['people_that_couldnt_dive'].tolist()
+people_that_couldnt_dive = list(map(int, people_that_couldnt_dive))
+
+
+#----------------------------------------------------------------------------------------------------------------------
+
+# Define the number of divers
+level3_2 = adjusted_level3_2
+level1 = adjusted_level1
+level3_1 = adjusted_level3_1
+level2_1 = adjusted_level2_1
+level2_2 = adjusted_level2_2 
+first_aid_number= adjusted_first_aid_number
+ear_problem_number=adjusted_ear_problem_number
+equipment_number=adjusted_equipment_number
+number_days = number_days_left
+num_teams=num_teams_for_group_dives
+num_slots=num_slots
+
+total_divers = level1+level2_1+level2_2+level3_1+level3_2
+
+dummy_number=50*(1-close_dummy_addition)
+ear_problem_divers = set(range(0,ear_problem_number))
+adp_first_aid = set([range(level1+level2_1+level2_2,level1+level2_1+level2_2+first_aid_number),range(int(total_divers+4*dummy_number/5),int(total_divers+dummy_number))])
+
+divers=range(0,total_divers+dummy_number)
+days = range(0, number_days)
+slots = range(0, num_slots)
+teams = range(0, num_teams+1) #kebap için +1 
+tasks = range(0, 6)
+
+# divers' experience levels
+
+exp_levels = {}
+for i in divers:
+    if i+1 in ear_problem_divers:
+        exp_levels[i] = 1
+    elif i+1 <= level1:
+        exp_levels[i] = 1
+    elif i+1 <= level1+level2_1:
+        exp_levels[i] = 2.1 #double trip    
+    elif i+1 <= level1+level2_1+level2_2:
+        exp_levels[i] = 2.2 #eski
+    elif i+1 <= level1+level2_1+level2_2+level3_1:
+        exp_levels[i] = 3.1 #alt
+    elif i+1 <= total_divers:
+        exp_levels[i] = 3.2 #üst
+    elif i+1 <= total_divers+dummy_number/5:
+        exp_levels[i] = 1
+    elif i+1 <= total_divers+2*dummy_number/5:
+        exp_levels[i] = 2.1
+    elif i+1 <= total_divers+3*dummy_number/5:
+        exp_levels[i] = 2.2
+    elif i+1 <= total_divers+4*dummy_number/5:
+        exp_levels[i] = 3.1
+    else:
+        exp_levels[i] = 3.2
+
+        
+# Define the problem
+prob = LpProblem("SCUBA Diving Planning Tool", LpMaximize)
+
+# Create decision variables
+x = LpVariable.dicts("x", [(diver, day, slot, team) for diver in divers for day in days for slot in slots for team in teams], lowBound=0, upBound=1, cat=LpInteger)#dalış
+y = LpVariable.dicts("y", [(diver, day, slot) for diver in divers for day in days for slot in slots], lowBound=0, upBound=1, cat=LpInteger)#standby
+z = LpVariable.dicts("z", [(diver, day) for diver in divers for day in days], lowBound=0, upBound=1, cat=LpInteger)#amir
+a = LpVariable.dicts("a", [(diver, day, slot, task) for diver in divers for day in days for slot in slots for task in tasks], lowBound=0, upBound=1, cat=LpInteger)#adp
+binary_dummy = LpVariable.dicts("binary_dummy", [(day ,slot, team) for day in days for slot in slots for team in teams], lowBound=0, upBound=1, cat=LpInteger)
+binary_dummy2 = LpVariable.dicts("binary_dummy2", [(day ,slot, team) for day in days for slot in slots for team in teams], lowBound=0, upBound=1, cat=LpInteger)
+z2 = LpVariable.dicts("z2", [(diver, day) for diver in divers for day in days], lowBound=0, upBound=1, cat=LpInteger)#amir
+
+# fairness
+sb_coeff = 10000
+ow_sb_2_1 = sb_coeff*number_days*2*2/level2_1
+ow_sb_2_2 = sb_coeff*number_days*(num_slots-2)*2/level2_1
+amir_coeff = 1000
+ow_amir = 1000*(1+option_2_amir)
+
+# Create the absolute difference variables
+abs_diff_y = LpVariable.dicts("abs_diff_y", divers, lowBound=0)
+abs_diff_z = LpVariable.dicts("abs_diff_z", divers, lowBound=0)
+
+# Add constraints and update objective function for Standby divers for çift gezi
+for diver in divers:
+    if exp_levels[diver] ==2.1:
+        prob += sb_coeff * lpSum([y[(diver, day, slot)] for day in days for slot in slots]) - ow_sb_2_1 <= abs_diff_y[diver]
+        prob += ow_sb_2_1 - sb_coeff * lpSum([y[(diver, day, slot)] for day in days for slot in slots]) <= abs_diff_y[diver]
+o5=-lpSum([abs_diff_y[(diver)] for diver in range(0,total_divers)])
+
+# Add constraints and update objective function for Standby divers for eski 2
+for diver in divers:
+    if exp_levels[diver] ==2.2:
+        prob += sb_coeff * lpSum([y[(diver, day, slot)] for day in days for slot in slots]) - ow_sb_2_2 <= abs_diff_y[diver]
+        prob += ow_sb_2_2 - sb_coeff * lpSum([y[(diver, day, slot)] for day in days for slot in slots]) <= abs_diff_y[diver]
+o6=-lpSum([abs_diff_y[(diver)] for diver in range(0,total_divers)])
+
+
+# Add constraints and update objective function for Amir divers
+for diver in divers:
+    if exp_levels[diver] == 2.1:
+        prob += amir_coeff * lpSum([z[(diver, day)] for day in days]) - ow_amir <= abs_diff_z[diver]
+        prob += ow_amir - amir_coeff * lpSum([z[(diver, day)] for day in days]) <= abs_diff_z[diver]
+o7=-lpSum([abs_diff_z[(diver)] for diver in range(0,total_divers)])
+
+
+o1=-1000*lpSum([x[(diver, day, slot, num_teams)] for diver in range(0,total_divers) for day in days for slot in slots])
+o2=lpSum([x[(diver, day, slot, team)] for diver in range(0,total_divers) for day in days for slot in slots for team in teams])
+o3=100 * lpSum([x[(diver, day, slot, team)] for diver in range(0,total_divers) for day in days for slot in slots for team in teams if exp_levels[diver] in [2.1,3.1] if team in range(0, num_teams)])
+o4=-10000000 * lpSum(y[(diver, day, slot)]+z[(diver, day)]+z2[(diver, day)]+a[(diver, day, slot, task)] for diver in range(total_divers,total_divers+dummy_number) for day in days for slot in slots for team in teams for task in tasks)
+o8=-10000000000 * lpSum(x[diver,day,slot,team] for day in days for diver in range(total_divers,total_divers+dummy_number) for slot in slots for team in teams)
+
+# Define the objective function
+prob += o1+o2+o3+o4+o5+o6+o7+o8
+
+
+# Define the equipment constraint
+for day in days:
+    for slot in slots:
+        prob += lpSum(x[diver, day, slot, team] for diver in divers for team in teams) <= equipment_number
+
+# A diver can dive at most 2 times a day and at least 1 + additional contingency considerations
+for day in days:
+    for diver in range(0,total_divers):
+        if half_day_cancelled_on_previous_day == 0:
+            prob += lpSum([x[(diver, day, slot, team)] for slot in slots for team in teams]) >= 1
+        else:
+            if diver in people_that_couldnt_dive:
+                prob += lpSum([x[(diver, day, slot, team)] for slot in slots for team in teams]) >= 1
+            else:
+                prob += lpSum([x[(diver, day, slot, team)] for slot in slots for team in teams]) >= 0
+                
+for day in days:
+    for diver in divers:
+        if half_day_cancelled_on_previous_day == 0:
+            if exp_levels[diver] != 3.2:
+                prob += lpSum([x[(diver, day, slot, team)] for slot in slots for team in teams]) <= 2
+            else:
+                prob += lpSum([x[(diver, day, slot, team)] for slot in slots for team in teams]) <= 3*can_3_2_dive_3_times+2*(1-can_3_2_dive_3_times)
+        else:
+            if day==0:
+                if diver in people_that_couldnt_dive:
+                    if exp_levels[diver] != 3.2:
+                        prob += lpSum([x[(diver, day, slot, team)] for slot in slots for team in teams]) == 2
+                    else:
+                        prob += lpSum([x[(diver, day, slot, team)] for slot in slots for team in teams]) <= 3*can_3_2_dive_3_times+2*(1-can_3_2_dive_3_times)
+                else:
+                    if exp_levels[diver] != 3.2:
+                        prob += lpSum([x[(diver, day, slot, team)] for slot in slots for team in teams]) <= 2
+                    else:
+                        prob += lpSum([x[(diver, day, slot, team)] for slot in slots for team in teams]) <= 3*can_3_2_dive_3_times+2*(1-can_3_2_dive_3_times)
+            else:
+                if exp_levels[diver] != 3.2:
+                    prob += lpSum([x[(diver, day, slot, team)] for slot in slots for team in teams]) <= 2
+                else:
+                    prob += lpSum([x[(diver, day, slot, team)] for slot in slots for team in teams]) <= 3*can_3_2_dive_3_times+2*(1-can_3_2_dive_3_times)
+
+# A diver cannot be assigned two teams in the same slot
+for diver in divers:
+    for day in days:
+        for slot in slots:
+            prob += lpSum([x[(diver, day, slot, team)] for team in teams]) <= 1
+
+
+# Define the team composition constraints
+for day in days:
+    for slot in slots: 
+        for team in teams:
+            if team in range(0, num_teams):
+                prob += lpSum(x[(diver, day, slot, team)] for diver in divers if exp_levels[diver] ==1) == 2*binary_dummy2[(day, slot, team)]
+                prob += lpSum(x[(diver, day, slot, team)] for diver in divers if exp_levels[diver] in [2.1,2.2]) == 1*binary_dummy2[(day, slot, team)]
+                prob += lpSum(x[(diver, day, slot, team)] for diver in divers if exp_levels[diver] ==3.1) <= 1*binary_dummy2[(day, slot, team)]
+                prob += lpSum(x[(diver, day, slot, team)] for diver in divers if exp_levels[diver] ==3.2) == 1*binary_dummy2[(day, slot, team)]
+                prob += lpSum(x[(diver, day, slot, team)] for diver in divers) <= 5*binary_dummy2[(day, slot, team)]
+                prob += lpSum(x[(diver, day, slot, team)] for diver in divers) >= 4*binary_dummy2[(day, slot, team)]
+                prob += lpSum(x[(diver, day, slot, team)] for diver in ear_problem_divers) <= 1*binary_dummy2[(day, slot, team)]
+            else:
+                prob += lpSum(x[(diver, day, slot, team)] for diver in divers if exp_levels[diver] ==1) == 0
+                prob += lpSum(x[(diver, day, slot, team)] for diver in divers if diver in range(0,total_divers)) >= 2* binary_dummy[(day, slot, team)]
+                prob += lpSum(x[(diver, day, slot, team)] for diver in divers) <= 1000 * binary_dummy[(day, slot ,team)]
+
+# President and vice president cannot dive at the same slot
+for day in days:
+    for slot in slots:
+        prob += lpSum((x[(level1+level2_1+level2_2, day, slot, team)]) + (x[(level1+level2_1+level2_2+level3_1, day, slot, team)]) for team in teams) <=1
+
+#standby
+for day in days:
+    for slot in slots:
+        #every slot 2 standby
+        prob += lpSum(y[(diver, day, slot)] for diver in divers)==2
+        #only 2* divers can be standby
+        prob += lpSum([y[(diver, day, slot)] for diver in divers if exp_levels[diver] not in [2.1,2.2]])==0
+
+#a diver cannot be a standby if diving at that slot
+for day in days:
+    for slot in slots: 
+        for team in teams:
+            for diver in divers:
+                prob += y[(diver, day, slot)]+x[(diver,day,slot,team)] <= 1
+
+#only çift gezi 2* divers can be standby at the first and last slots                      
+for day in days:
+    for diver in divers:
+        if exp_levels[diver] !=2.1:
+            prob += y[(diver, day, 0)]==0
+            prob += y[(diver, day, num_slots-1)]==0
+#amir
+for day in days:
+    prob += lpSum(z[(diver, day)] for diver in divers)==1
+    prob += lpSum(z[(diver, day)]+z2[(diver, day)] for diver in divers if exp_levels[diver] != 2.1)==0
+    prob += lpSum(z2[(diver, day)] for diver in divers)==1*option_2_amir
+
+for day in days:
+    for slot in slots: 
+        for diver in divers:
+            #amir cannot be in standby
+            prob += z2[(diver, day)]+z[(diver, day)]+y[(diver, day, slot)]<= 1
+                                
+for day in days:
+        for team in teams: 
+            for diver in divers:  
+                for slot in slots:
+                    if option_2_amir==0:
+                        if slot in range(0,num_slots-1):
+                        #amir should dive just at the last slot
+                            prob += z[(diver, day)]+x[(diver, day, slot, team)]<= 1
+                        else:
+                            prob += z[(diver, day)]+x[(diver, day, slot, team)]<= 2
+                    if option_2_amir==1:   
+                        if slot in range(0,2):
+                        #amir should dive just at the last slot
+                            prob += z[(diver, day)]+x[(diver, day, slot, team)]<= 1
+                            prob += z2[(diver, day)]+x[(diver, day, slot, team)]<= 2
+                    else:
+                            prob += z[(diver, day)]+x[(diver, day, slot, team)]<= 2
+                            prob += z2[(diver, day)]+x[(diver, day, slot, team)]<= 1
+                                 
+#emergency plan
+for day in days:
+    for slot in slots:
+        #every slot 6 adp
+        prob += lpSum(a[(diver, day, slot, task)] for task in tasks for diver in divers)==6
+        prob += lpSum([a[(diver, day, slot, task)] for task in tasks for diver in divers if exp_levels[diver] not in [3.1,3.2]])==0
+
+#a diver cannot be assigned to ADP if diving at that slot
+for day in days:
+    for slot in slots: 
+        for team in teams:
+            for diver in divers:
+                prob += lpSum([a[(diver, day, slot, task)] for task in tasks])+x[(diver,day,slot,team)]+y[(diver, day, slot)] <= 1
+                
+for day in days:
+    for slot in slots: 
+        for team in teams:
+            for diver in divers:
+                if diver not in adp_first_aid:
+                    prob += a[(diver, day, slot, 1)] == 0
+                
+                    
+# Solve the problem
+prob.solve()
+
+# Print the status of the problem
+print("Status: ", LpStatus[prob.status])
+
+# print the optimal solution for X - without kebap
+for day in days: 
+    for slot in slots:
+        for j in range(0,num_teams):
+            team_x = [i for i in range(0,total_divers) if x[(i, day, slot, j)].varValue == 1]
+            team_d = [i for i in range(total_divers, total_divers+dummy_number) if x[(i, day, slot, j)].varValue == 1]
+            print(f"Group dive...Day_{day},Slot_{slot},Team_{j}," + ",".join(str(t) for t in team_x)+ ","+ ",".join("D"+str(t) for t in team_d))          
+                
+# print the optimal solution for X - kebap only
+for day in days: 
+    for slot in slots:
+            team_x = [i for i in range(0,total_divers) if x[(i, day, slot, num_teams)].varValue == 1]
+            team_d = [i for i in range(total_divers, total_divers+dummy_number) if x[(i, day, slot, num_teams)].varValue == 1]            
+            print(f"Group dive...Day_{day},Slot_{slot},Team_{j}," + ",".join(str(t) for t in team_x)+ ","+ ",".join("D"+str(t) for t in team_d))          
+
+# print the optimal solution for Y
+for day in days: 
+    for s in slots:
+        slot_y = [i for i in range(0,total_divers) if y[(i, day, s)].varValue == 1]
+        slot_d = [i for i in range(total_divers, total_divers+dummy_number) if y[(i, day, s)].varValue == 1]
+        print(f"Stanby...Day_{day},Slot_{s}," + ",".join(str(t) for t in slot_y)+ ","+ ",".join("D"+str(t) for t in slot_d))
+            
+# print the optimal solution for Z
+for d in days: 
+    day_z = [i for i in range(0,total_divers) if z[(i, d)].varValue == 1]
+    day_d = [i for i in range(total_divers, total_divers+dummy_number) if z[(i, d)].varValue == 1]
+    print(f"Amir...Day_{d}," + ",".join(str(t) for t in day_z)+ ","+ ",".join("D"+str(t) for t in day_d))
+for d in days: 
+    day_z = [i for i in range(0,total_divers) if z2[(i, d)].varValue == 1]
+    day_d = [i for i in range(total_divers, total_divers+dummy_number) if z2[(i, d)].varValue == 1]
+    print(f"Amir2...Day_{d}," + ",".join(str(t) for t in day_z)+ ","+ ",".join("D"+str(t) for t in day_d))
+# print the optimal solution for A
+for day in days: 
+    for s in slots:
+        slot_a = [i for i in range(0,total_divers) for t in tasks if a[(i, day, s, t)].varValue == 1]
+        slot_d = [i for i in range(total_divers, total_divers+dummy_number) for t in tasks if a[(i, day, s, t)].varValue == 1]
+        print(f"ADP...Day_{day},SlotADP_{s}," + ",".join(str(t) for t in slot_a) + ","+ ",".join("D"+str(a) for a in slot_d))
+        
+        
+#---------------------------------------------------------------------------------------------------------------------
+#OUTPUT INTEGRATED INTO THE EXCEL SHEET:   
+
+# create empty lists for each output type
+group_dive = []
+kebap = []
+standby = []
+amir = []
+adp = []
+
+# add each output to the appropriate list
+for day in days: 
+    for slot in slots:
+        for j in range(0,num_teams):
+            team = [i for i in divers if x[(i, day, slot, j)].varValue == 1]
+            group_dive.append({'Day': day, 'Slot': slot, 'Team': j, 'Divers': ','.join(str(t) for t in team)})
+for day in days: 
+    for slot in slots:
+        team = [i for i in divers if x[(i, day, slot, num_teams)].varValue == 1]
+        kebap.append({'Day': day, 'Slot': slot, 'Team': num_teams, 'KebapDivers': ','.join(str(t) for t in team)})
+for day in days: 
+    for s in slots:
+        slot = [i for i in divers if y[(i, day, s)].varValue == 1]
+        standby.append({'Day': day, 'Slot': s, 'Standby': ','.join(str(t) for t in slot)})
+for d in days: 
+    day = [i for i in divers if z[(i, d)].varValue == 1]
+    amir.append({'Day': d, 'Amir': ','.join(str(t) for t in day)})
+for day in days: 
+    for s in slots:
+        slot = [i for i in divers for t in tasks if a[(i, day, s, t)].varValue == 1]
+        adp.append({'Day': day, 'Slot': s, 'ADP': ','.join(str(t) for t in slot)})
+
+# create DataFrames for each output type
+df_group_dive = pd.DataFrame(group_dive)
+df_kebap = pd.DataFrame(kebap)
+df_standby = pd.DataFrame(standby)
+df_amir = pd.DataFrame(amir)
+df_adp = pd.DataFrame(adp)
+
+# combine the dataframes into one
+df_output = pd.concat([df_group_dive, df_kebap, df_standby, df_amir, df_adp], axis=1)
+
+# load the existing workbook
+book = load_workbook('Desktop/planlama.xlsx')
+
+# create a new sheet for the output
+writer = pd.ExcelWriter('Desktop/planlama.xlsx', engine='openpyxl') 
+writer.book = book
+writer.sheets = dict((ws.title, ws) for ws in book.worksheets)
+df_output.to_excel(writer, sheet_name='planlama', index=False)
+
+# save the changes and close the workbook
+writer.save()
+
+#-------------------------------------------------------------------------------------------------------------------------
